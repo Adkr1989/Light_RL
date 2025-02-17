@@ -68,7 +68,21 @@ class ReplayBuffer(Buffer):
         split_res = {}
         for key in batchs[-1].keys():
             split_res[key] = [item[key] for item in batchs]
-          
+
+        for k, v in split_res.items():
+            if isinstance(v[0], np.ndarray):
+                split_res[k] = np.asarray(v)
+        # for k, v in split_res.items():
+        #     if len(v) == 0:
+        #         continue
+        #     if isinstance(v[0])
+        # for item in batchs:
+        #     for k, v in item.items():
+        #         split_res.setdefault(k, []).append(v)
+
+        # for k, v in split_res.items():
+        #     split_res[k] = np.asarray(v)
+
         return split_res
     
     # @property
