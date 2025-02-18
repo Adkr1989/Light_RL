@@ -19,22 +19,25 @@ class ActorNet(nn.Module):
                                 # nn.Dropout(p=0.5), 
                                 nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
                                 nn.Linear(hidden_dim, output_dim), )
-
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, s):
-        x = torch.tanh(self.fc1(s))
-        x = torch.tanh(self.fc2(x))
-        return x
-        # return self.net(s)
     
-    def pi(self, s, softmax_dim=0):
+    def forward(self, s):
+        return self.net(s)
+    
+    def pi(self, s, softmax_dim=-1):
         x = self.forward(s)
-        prob = F.softmax(self.fc3(x), dim=softmax_dim)
+        prob = F.softmax(x, dim=softmax_dim)
         return prob
-            
+    
+    def action(self, s, softmax_dim=-1, deterministic=False):
+        prob = self.pi(s, softmax_dim)
+        if deterministic:
+            act = torch.argmax(prob)
+            return act.item(), None
+        else:
+            dist = torch.distributions.Categorical(prob)
+            act = dist.sample()
+            log_prob = dist.log_prob(act)
+            return act.item(), log_prob.item()            
 
 class CriticNet(nn.Module): # V(s)
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -88,7 +91,7 @@ critic = CriticNet(state_space, hidden_dim, 1)
 policy = PPO(actor, critic, **kwargs)
 
 # model save setting
-save_dir = 'save/a2c_' + env_name
+save_dir = 'save/ppo_' + env_name
 save_dir = os.path.join(os.path.dirname(__file__), save_dir)
 save_file = save_dir.split('/')[-1]
 os.makedirs(save_dir, exist_ok=True)
@@ -97,54 +100,30 @@ os.makedirs(save_dir, exist_ok=True)
 PLOT = 1
 # WRITER = 0
 
+def eval_loop(policy, env, render=False):
+    s, info = env.reset()
+    done = False
+    total_rew = 0
+    while not done:
+        a, _ = policy.action(s, deterministic=1)
+        s_, r, dw, tr, info = env.step(a)
+        if render:
+            env.render()
+        done = (dw or tr)
+        total_rew += r
+        s = s_
+    return total_rew
 
-# def sample(policy, env, max_len=None, train=1, render=0, avg=0):
-#     rews = 0
-#     state, info = env.reset()
-#     sam_cnt = 0
-
-#     if not max_len:
-#         max_len = policy.buffer.capacity() if train else int(1e6)
-#     for i in range(max_len):
-#         act, log_prob = policy.action(state, train)
-
-#         next_state, rew, dw, tr, info = env.step(act)
-#         done = (dw or tr)
-#         #good for LunarLander
-#         rew = -30 if rew <= -100 else rew
-#         sam_cnt += 1
-
-#         if train:
-#             mask = 0 if done else 1
-#             policy.process(s=state, a=act, r=rew, s_=next_state, l=log_prob, m=mask)
-#         if render:
-#             env.render() # for self define env, you must define env.render() for visual
-#         rews += rew
-#         if done:
-#             break
-#         state = next_state
-#     rews = rews / (i + 1) if avg else rews
-#     return rews, sam_cnt
-
-def evaluate_policy(policy, env, turns = 3):
-    total_scores = 0
-    for j in range(turns):
-        s, info = env.reset()
-        done = False
-        while not done:
-            # Take deterministic actions at test time
-            a, logprob_a = policy.action(s, train=0)
-            s_next, r, dw, tr, info = env.step(a)
-            done = (dw or tr)
-
-            total_scores += r
-            s = s_next
-    return int(total_scores/turns)
+def eval_policy(policy, env, loop_cnt=3):
+    total_rew = 0
+    for _ in range(loop_cnt):
+        total_rew += eval_loop(policy, env)
+    return int(total_rew / loop_cnt)
 
 def eval():
     policy.load_model(save_dir, load_actor=1)
     for i_eps in range(1000):
-        rewards = policy.sample(env, train=0, render=1)
+        rewards = eval_loop(policy, env, render=True)
         print (f'EPS:{i_eps + 1}, reward:{round(rewards, 3)}')
     env.close()
 
@@ -160,63 +139,63 @@ def train():
         os.makedirs(save_dir)
 
     live_time = []
-    # from tqdm import tqdm
-    # for i_eps in tqdm(range(policy.num_episodes)):
     total_sam_cnt = 0
-    show_cnt = 0
     for i_eps in range(policy.num_episodes):
-    # for i_eps in range(1000000):
-        # rewards = policy.sample(env)
-        # rewards, sam_cnt = sample(policy, env)
         global env_seed
         state, info = env.reset(seed=env_seed)
         env_seed += 1
-        # sam_cnt = 0
 
-        # if not max_len:
-        #     max_len = policy.buffer.capacity() if train else int(1e6)
         max_len = policy.buffer.capacity()
         rews = 0
         for _ in range(max_len):
-            act, log_prob = policy.action(state, train=1)
+            act, log_prob = policy.action(state)
 
             next_state, rew, dw, tr, info = env.step(act)
             done = (dw or tr)
-            #good for LunarLander
-            rew = -30 if rew <= -100 else rew
-            # sam_cnt += 1
+            rew = -30 if rew <= -100 else rew # help for LunarLander
             total_sam_cnt += 1
 
-            # if train:
+            if total_sam_cnt % 5000 == 0:
+                eval_rews = eval_policy(policy, eval_env, loop_cnt=3)
+                print (f'EPS:{i_eps}, step: {int(total_sam_cnt / 1000)}k, rewards:{round(eval_rews, 3)}')
+
+                live_time.append(eval_rews)
+                Tools.plot(live_time, save_dir, 
+                            title='PPO_'+env_name, 
+                            x_label="Steps", 
+                            y_label="Eval rewards",
+                            step_interval=10)
+                
+            if total_sam_cnt % 50000 == 0:
+                policy.save_model(save_dir, save_file, total_sam_cnt, save_actor=1, save_critic=1)
+            
             mask = 0 if done else 1
             policy.process(s=state, a=act, r=rew, s_=next_state, l=log_prob, m=mask)
             if render:
                 env.render() # for self define env, you must define env.render() for visual
             rews += rew
+
             if done:
                 break
             state = next_state
         # print(total_sam_cnt)
         #==============learn==============
         pg_loss, v_loss = policy.learn()
-        if PLOT:
-            pass
-            # live_time.append(rews)
-            # Tools.plot(live_time, 'PPO_'+env_name, save_dir, 1000)
+        # if PLOT:
+        #     live_time.append(rews)
+        #     Tools.plot(live_time, save_dir, 
+        #                 title='PPO_'+env_name, 
+        #                 x_label="Steps", 
+        #                 y_label="Eval rewards",
+        #                 step_interval=1000)
+        
         # if WRITER:
         #     writer.add_scalar('reward', reward_avg, global_step=i_eps)
         #     writer.add_scalar('loss/pg_loss', pg_loss, global_step=i_eps)
         #     writer.add_scalar('loss/v_loss', v_loss, global_step=i_eps)
         # if (i_eps + 1) % 50 == 0:
         # if total_sam_cnt % 1000 == 0:
-        if total_sam_cnt > show_cnt * 5000:
-            show_cnt += 1
-            rews = evaluate_policy(policy, eval_env, turns=3)
-            live_time.append(rews)
-            Tools.plot(live_time, 'PPO_'+env_name, save_dir, 100)
-            print (f'EPS:{i_eps}, step: {total_sam_cnt}, rewards:{round(rews, 3)}, pg_loss:{round(pg_loss, 3)}, v_loss:{round(v_loss, 3)}')
-        if i_eps % 100000 == 0 or i_eps == (policy.num_episodes - 1):
-            policy.save_model(save_dir, save_file, str(i_eps + 1), save_actor=1, save_critic=1)
+        
     # writer.close()
 
 if __name__ == '__main__':

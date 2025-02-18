@@ -16,8 +16,8 @@ class BasePolicy(object):
     def action(self):
         raise NotImplementedError
 
-    def sample(self):
-        raise NotImplementedError
+    # def sample(self):
+    #     raise NotImplementedError
 
     def process(self, **kwargs):
         self.buffer.append(**kwargs)
@@ -44,6 +44,7 @@ class BasePolicy(object):
         assert isinstance(save_dir, str) and isinstance(save_file, str)
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, save_file)
+        save_step = str(save_step)
         actor_save = '_'.join((save_path, save_step, 'actor.pth'))
         critic_save = '_'.join((save_path, save_step, 'critic.pth'))
 

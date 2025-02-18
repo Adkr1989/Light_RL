@@ -7,13 +7,13 @@ from collections import deque
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def plot(steps, y_label, model_save_dir, step_interval=None):
+def plot(steps, model_save_dir, title="rl", x_label="Episode", y_label="Reward", step_interval=None):
     ax = plt.subplot(111)
     ax.cla()
     ax.grid()
-    ax.set_title(y_label)
-    ax.set_xlabel('Episode')
-    ax.set_ylabel('Run Reward')
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
     ax.plot(steps)
     RunTime = len(steps)
 
@@ -70,7 +70,8 @@ class ReplayBuffer(Buffer):
             split_res[key] = [item[key] for item in batchs]
 
         for k, v in split_res.items():
-            if isinstance(v[0], np.ndarray):
+            # if isinstance(v[0], np.ndarray):
+            if not isinstance(v[0], torch.Tensor):
                 split_res[k] = np.asarray(v)
         # for k, v in split_res.items():
         #     if len(v) == 0:

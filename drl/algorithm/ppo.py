@@ -8,6 +8,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.distributions import Categorical
+from torch.utils.data import DataLoader, TensorDataset
 
 
 from drl.algorithm import BasePolicy
@@ -25,9 +26,9 @@ class PPO(BasePolicy):  # option: double
         actor_learn_freq=1,
         learning_rate=1e-4,
         discount_factor=0.99,
-        ratio_clip=0.2,
+        clip_ratio=0.2,
         lam_entropy=0.01,
-        gae_lamda=0.95,  # td
+        gae_lamda=0.95,
         batch_size=64,
         verbose=False,
         act_dim=None,
@@ -37,7 +38,7 @@ class PPO(BasePolicy):  # option: double
         self.__dict__.update(kwargs)
         self.lr = learning_rate
         self.eps = np.finfo(np.float32).eps.item()
-        self.ratio_clip = ratio_clip
+        self.clip_ratio = clip_ratio
         self.lam_entropy = lam_entropy
         self.adv_norm = False  # normalize advantage, defalut=False
         self.rew_norm = False  # normalize reward, default=False
@@ -67,57 +68,32 @@ class PPO(BasePolicy):  # option: double
         self.entropy_coef = 0
         self.entropy_coef_decay = 0.99
 
-    def action(self, state, train=1):
+    def action(self, state, deterministic=False, **kwargs):
         state = torch.tensor(state, dtype=torch.float32, device=device)
-        # if train:
-        #     self.actor_eval.train()
-        # else:
-        #     self.actor_eval.eval()
-
-        # act_source = self.actor_eval(state)
-        # dist = F.softmax(act_source, dim=0)
-        # if train:
-        #     m = Categorical(dist)
-        #     act = m.sample()
-        #     log_prob = m.log_prob(act)
-        #     return act.item(), log_prob
-        # else:
-        #     a = torch.argmax(dist).item()
-        #     return a, None
-
+        if deterministic:
+            self.actor_eval.eval()
+        else:
+            self.actor_eval.train()
         with torch.no_grad():
-            pi = self.actor_eval.pi(state, softmax_dim=0)
-            if not train:
-                a = torch.argmax(pi).item()
-                return a, None
-            else:
-                m = Categorical(pi)
-                a = m.sample().item()
-                pi_a = pi[a].item()
-                return a, pi_a
+            act = self.actor_eval.action(state, deterministic=deterministic, **kwargs)
+            return act
     
     def learn(self, i_episode=0, num_episode=100):
-
-        self.entropy_coef *= self.entropy_coef_decay
         if not self.buffer.is_full():
             # print(f'Waiting for a full buffer: {len(self.buffer)}\{self.buffer.capacity()} ', end='\r')
             return 0, 0
-
+        
         loss_actor_avg, loss_critic_avg = 0, 0
+        self.entropy_coef *= self.entropy_coef_decay
 
         mem = self.buffer.split(self.buffer.all_memory())
-        # import pdb; pdb.set_trace()
-        # if self.act_dim is None:
-        #     self.act_dim = mem['a'].shape[-1]
-
-        # S = torch.tensor(mem['s'], dtype=torch.float32, device=device)
         S = torch.from_numpy(mem['s']).float().to(device)
-        # A = torch.tensor(mem['a'], dtype=torch.float32, device=device).view(-1, self.act_dim)
-        A = torch.tensor(mem['a'], dtype=torch.float32, device=device).view(-1, 1)
-        S_ = torch.tensor(mem['s_'], dtype=torch.float32, device=device)
-        R = torch.tensor(mem['r'], dtype=torch.float32).view(-1, 1)
-        Log = torch.tensor(mem['l'], dtype=torch.float32, device=device).view(-1, 1)
-        # import pdb; pdb.set_trace()
+        A = torch.from_numpy(mem['a']).float().view(-1, 1).to(device)
+        S_ = torch.from_numpy(mem['s_']).float().to(device)
+        R = torch.from_numpy(mem['r']).float().view(-1, 1)
+        M = torch.from_numpy(mem['m']).float().view(-1, 1)
+        Log = torch.from_numpy(mem['l']).float().view(-1, 1).to(device)
+
         if self._verbose:
             print(f'Shape S:{S.shape}, A:{A.shape}, R:{R.shape}, S_:{S_.shape}, Log:{Log.shape}')
 
@@ -128,33 +104,27 @@ class PPO(BasePolicy):  # option: double
             v_evals_np = v_evals.cpu().numpy()
             end_v_eval_np = end_v_eval.cpu().numpy()
 
+            masks = M.numpy()
             rewards = self._normalized(R, self.eps).numpy() if self.rew_norm else R.numpy()
             adv_gae = self.GAE(rewards, v_evals_np, next_v_eval=end_v_eval_np,
-                                gamma=self._gamma, lam=self._gae_lam)
-            advantage = torch.from_numpy(adv_gae).to(device).unsqueeze(-1)
+                               masks=masks, gamma=self._gamma, lam=self._gae_lam)
+            advantage = torch.from_numpy(adv_gae).to(device).view(-1, 1)
             advantage = self._normalized(advantage, 1e-10) if self.adv_norm else advantage
-            td_target = advantage + v_evals
+            v_target = advantage + v_evals
 
-        optim_iter_num = int(math.ceil(S.shape[0] / self._batch_size))
+        dataset = TensorDataset(S, A, v_target, advantage, Log)
+        dataloader = DataLoader(dataset, batch_size=self._batch_size, shuffle=True)
 
         for _ in range(self._update_iteration):
 
-            # import pdb; pdb.set_trace()
-            perm = torch.randperm(S.shape[0], device=device)
-            # s, a, td_target, adv, old_prob_a = \
-            #     s[perm], a[perm], td_target[perm], adv[perm], Log[perm]
-            perm_s, perm_a, perm_td_tar, perm_adv, perm_old_prob_a = \
-                S[perm], A[perm], td_target[perm], advantage[perm], Log[perm]
-
-            for i in range(optim_iter_num):
-                idx = slice(i * self._batch_size, min((i + 1) * self._batch_size, S.shape[0]))
-                
+            for batch_data in dataloader:
+                bs_s, bs_a, bs_v_tar, bs_adv, bs_logp_old = batch_data
                 # critic loss
-                critic_loss = (self.critic_eval(perm_s[idx]) - perm_td_tar[idx]).pow(2).mean()
+                critic_loss = self.criterion(self.critic_eval(bs_s), bs_v_tar).mean()
+                #
                 for name, param in self.critic_eval.named_parameters():
                     if 'weight' in name:
                         critic_loss += param.pow(2).sum() * self.l2_reg
-
                 loss_critic_avg += critic_loss.item()
 
                 self.critic_eval_optim.zero_grad()
@@ -170,34 +140,24 @@ class PPO(BasePolicy):  # option: double
                     # continue
                     # mu, sigma = self.actor_eval(S)
                     # dist = Normal(mu, sigma)
-                    # new_log_prob = dist.log_prob(A)
+                    # logp = dist.log_prob(A)
 
-                    # act_source = self.actor_eval(perm_s[idx])
-                    # dist = F.softmax(act_source, dim=-1)
-                    # m = Categorical(dist)
-                    # new_log_prob = m.log_prob(perm_a[idx])  # 使用 log_prob 方法
-                    # pg_ratio = torch.exp(new_log_prob - perm_old_prob_a[idx])  # size = [batch_size, 1]
-                    # entropy_loss = m.entropy().sum(0, keepdim=True)
+                    # [batch_size, act_dim]
+                    prob = self.actor_eval.pi(bs_s)
+                    dist = Categorical(prob)
+                    pi_ent = dist.entropy().sum(0, keepdim=True)
+                    logp = dist.log_prob(bs_a.flatten()).unsqueeze(-1)
 
-                    prob = self.actor_eval.pi(perm_s[idx], softmax_dim=1)
-                    entropy_loss = Categorical(prob).entropy().sum(0, keepdim=True)
-                    prob_a = prob.gather(1, perm_a[idx].to(torch.int64))
-                    pg_ratio = torch.exp(torch.log(prob_a) - torch.log(perm_old_prob_a[idx]))  # a/b == exp(log(a)-log(b))
-
-
-                    clipped_pg_ratio = torch.clamp(pg_ratio, 1.0 - self.ratio_clip, 1.0 + self.ratio_clip)
-                    surrogate_loss = -1 * torch.min(pg_ratio * perm_adv[idx], clipped_pg_ratio * perm_adv[idx])
-
-                    # policy entropy
-                    # entropy_loss = -torch.mean(torch.exp(new_log_prob) * new_log_prob)
-                    # entropy_loss = -torch.mean(torch.sum(dist * torch.log(dist), dim=-1))
-                    # entropy_loss = m.entropy().sum(0, keepdim=True)
-
-                    actor_loss = surrogate_loss - self.lam_entropy * entropy_loss
+                    pg_ratio = torch.exp(logp - bs_logp_old)
+                    clipped_pg_ratio = torch.clamp(pg_ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
+                    surr1 = pg_ratio * bs_adv
+                    surr2 = clipped_pg_ratio * bs_adv
+                    # actor loss
+                    actor_loss = -1 * torch.min(surr1, surr2) - self.lam_entropy * pi_ent    
+                    #                 
                     actor_loss = actor_loss.mean()
-
                     loss_actor_avg += actor_loss.item()
-
+                    
                     self.actor_eval_optim.zero_grad()
                     actor_loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.actor_eval.parameters(), 40)
@@ -213,7 +173,7 @@ class PPO(BasePolicy):  # option: double
         # update param
         ep_ratio = 1 - (i_episode / num_episode)
         if self.schedule_clip:
-            self.ratio_clip = 0.2 * ep_ratio
+            self.clip_ratio = 0.2 * ep_ratio
 
         if self.schedule_adam:
             new_lr = self.lr * ep_ratio
@@ -226,6 +186,6 @@ class PPO(BasePolicy):  # option: double
 
         loss_actor_avg /= (self._update_iteration/self.actor_learn_freq)
         loss_critic_avg /= self._update_iteration
-        print(f'Train over loss_actor_avg: {loss_actor_avg}, loss_critic_avg {loss_critic_avg}', end='\r')
+        # print(f'Train over loss_actor_avg: {loss_actor_avg}, loss_critic_avg {loss_critic_avg}')
 
         return loss_actor_avg, loss_critic_avg
