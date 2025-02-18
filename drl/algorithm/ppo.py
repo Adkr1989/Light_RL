@@ -69,21 +69,32 @@ class PPO(BasePolicy):  # option: double
 
     def action(self, state, train=1):
         state = torch.tensor(state, dtype=torch.float32, device=device)
-        if train:
-            self.actor_eval.train()
-        else:
-            self.actor_eval.eval()
+        # if train:
+        #     self.actor_eval.train()
+        # else:
+        #     self.actor_eval.eval()
 
-        act_source = self.actor_eval(state)
-        dist = F.softmax(act_source, dim=-1)
-        if train:
-            m = Categorical(dist)
-            act = m.sample()
-            log_prob = m.log_prob(act)
-            return act.item(), log_prob
-        else:
-            a = torch.argmax(dist).item()
-            return a, None
+        # act_source = self.actor_eval(state)
+        # dist = F.softmax(act_source, dim=0)
+        # if train:
+        #     m = Categorical(dist)
+        #     act = m.sample()
+        #     log_prob = m.log_prob(act)
+        #     return act.item(), log_prob
+        # else:
+        #     a = torch.argmax(dist).item()
+        #     return a, None
+
+        with torch.no_grad():
+            pi = self.actor_eval.pi(state, softmax_dim=0)
+            if not train:
+                a = torch.argmax(pi).item()
+                return a, None
+            else:
+                m = Categorical(pi)
+                a = m.sample().item()
+                pi_a = pi[a].item()
+                return a, pi_a
     
     def learn(self, i_episode=0, num_episode=100):
 
@@ -124,9 +135,10 @@ class PPO(BasePolicy):  # option: double
             advantage = self._normalized(advantage, 1e-10) if self.adv_norm else advantage
             td_target = advantage + v_evals
 
+        optim_iter_num = int(math.ceil(S.shape[0] / self._batch_size))
+
         for _ in range(self._update_iteration):
 
-            optim_iter_num = int(math.ceil(S.shape[0] / self._batch_size))
             # import pdb; pdb.set_trace()
             perm = torch.randperm(S.shape[0], device=device)
             # s, a, td_target, adv, old_prob_a = \
@@ -160,19 +172,26 @@ class PPO(BasePolicy):  # option: double
                     # dist = Normal(mu, sigma)
                     # new_log_prob = dist.log_prob(A)
 
-                    act_source = self.actor_eval(perm_s)
-                    dist = F.softmax(act_source, dim=-1)
-                    m = Categorical(dist)
-                    new_log_prob = m.log_prob(perm_a)  # 使用 log_prob 方法
+                    # act_source = self.actor_eval(perm_s[idx])
+                    # dist = F.softmax(act_source, dim=-1)
+                    # m = Categorical(dist)
+                    # new_log_prob = m.log_prob(perm_a[idx])  # 使用 log_prob 方法
+                    # pg_ratio = torch.exp(new_log_prob - perm_old_prob_a[idx])  # size = [batch_size, 1]
+                    # entropy_loss = m.entropy().sum(0, keepdim=True)
 
-                    pg_ratio = torch.exp(new_log_prob - perm_old_prob_a)  # size = [batch_size, 1]
+                    prob = self.actor_eval.pi(perm_s[idx], softmax_dim=1)
+                    entropy_loss = Categorical(prob).entropy().sum(0, keepdim=True)
+                    prob_a = prob.gather(1, perm_a[idx].to(torch.int64))
+                    pg_ratio = torch.exp(torch.log(prob_a) - torch.log(perm_old_prob_a[idx]))  # a/b == exp(log(a)-log(b))
+
+
                     clipped_pg_ratio = torch.clamp(pg_ratio, 1.0 - self.ratio_clip, 1.0 + self.ratio_clip)
-                    surrogate_loss = -1 * torch.min(pg_ratio * perm_adv, clipped_pg_ratio * perm_adv)
+                    surrogate_loss = -1 * torch.min(pg_ratio * perm_adv[idx], clipped_pg_ratio * perm_adv[idx])
 
                     # policy entropy
                     # entropy_loss = -torch.mean(torch.exp(new_log_prob) * new_log_prob)
                     # entropy_loss = -torch.mean(torch.sum(dist * torch.log(dist), dim=-1))
-                    entropy_loss = m.entropy().sum(0, keepdim=True)
+                    # entropy_loss = m.entropy().sum(0, keepdim=True)
 
                     actor_loss = surrogate_loss - self.lam_entropy * entropy_loss
                     actor_loss = actor_loss.mean()

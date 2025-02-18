@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 # from torch.utils.tensorboard import SummaryWriter
 # import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 import drl.utils as Tools
 # from drl.algorithm import A2C
@@ -19,8 +20,20 @@ class ActorNet(nn.Module):
                                 nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
                                 nn.Linear(hidden_dim, output_dim), )
 
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, output_dim)
+
     def forward(self, s):
-        return self.net(s)
+        x = torch.tanh(self.fc1(s))
+        x = torch.tanh(self.fc2(x))
+        return x
+        # return self.net(s)
+    
+    def pi(self, s, softmax_dim=0):
+        x = self.forward(s)
+        prob = F.softmax(self.fc3(x), dim=softmax_dim)
+        return prob
             
 
 class CriticNet(nn.Module): # V(s)
@@ -136,6 +149,7 @@ def eval():
     env.close()
 
 render = False
+env_seed = 42
 def train():
     # rm dir exist
     try:
@@ -154,8 +168,9 @@ def train():
     # for i_eps in range(1000000):
         # rewards = policy.sample(env)
         # rewards, sam_cnt = sample(policy, env)
-
-        state, info = env.reset()
+        global env_seed
+        state, info = env.reset(seed=env_seed)
+        env_seed += 1
         # sam_cnt = 0
 
         # if not max_len:
