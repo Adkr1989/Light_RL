@@ -22,13 +22,15 @@ class PPO(BasePolicy):  # option: double
         # model,
         a_model,
         c_model,
-        buffer_size=1000,
+        buffer_size=1024,
         actor_learn_freq=1,
         learning_rate=1e-4,
-        discount_factor=0.99,
         clip_ratio=0.2,
-        lam_entropy=0.01,
-        gae_lamda=0.95,
+        gamma=0.99,
+        lamda=0.95,
+        entropy_coef=0.01,
+        value_coef=0.5,
+        epochs=10,
         batch_size=64,
         verbose=False,
         act_dim=None,
@@ -36,19 +38,21 @@ class PPO(BasePolicy):  # option: double
     ):
         super().__init__()
         self.__dict__.update(kwargs)
+
         self.lr = learning_rate
         self.eps = np.finfo(np.float32).eps.item()
         self.clip_ratio = clip_ratio
-        self.lam_entropy = lam_entropy
+        self.entropy_coef = entropy_coef
+        self.value_coef = value_coef
         self.adv_norm = False  # normalize advantage, defalut=False
         self.rew_norm = False  # normalize reward, default=False
         self.schedule_clip = False
         self.schedule_adam = False
 
         self.actor_learn_freq = actor_learn_freq
-        self._gamma = discount_factor
-        self._gae_lam = gae_lamda
-        self._update_iteration = 10
+        self._gamma = gamma
+        self._gae_lam = lamda
+        self._update_epochs = epochs
         self._learn_critic_cnt = 0
         self._learn_actor_cnt = 0
 
@@ -56,7 +60,6 @@ class PPO(BasePolicy):  # option: double
         self._batch_size = batch_size
         self._normalized = lambda x, e: (x - x.mean()) / (x.std() + e)
         self.buffer = ReplayBuffer(buffer_size, replay=False)
-
         self.actor_eval = a_model.to(device).train()
         self.critic_eval = c_model.to(device).train()
         self.actor_eval_optim = optim.Adam(self.actor_eval.parameters(), lr=self.lr)
@@ -65,7 +68,6 @@ class PPO(BasePolicy):  # option: double
         self.criterion = nn.SmoothL1Loss()
         self.act_dim = act_dim
         self.l2_reg = 0
-        self.entropy_coef = 0
         self.entropy_coef_decay = 0.99
 
     def action(self, state, deterministic=False, **kwargs):
@@ -115,7 +117,7 @@ class PPO(BasePolicy):  # option: double
         dataset = TensorDataset(S, A, v_target, advantage, Log)
         dataloader = DataLoader(dataset, batch_size=self._batch_size, shuffle=True)
 
-        for _ in range(self._update_iteration):
+        for _ in range(self._update_epochs):
 
             for batch_data in dataloader:
                 bs_s, bs_a, bs_v_tar, bs_adv, bs_logp_old = batch_data
@@ -153,7 +155,7 @@ class PPO(BasePolicy):  # option: double
                     surr1 = pg_ratio * bs_adv
                     surr2 = clipped_pg_ratio * bs_adv
                     # actor loss
-                    actor_loss = -1 * torch.min(surr1, surr2) - self.lam_entropy * pi_ent    
+                    actor_loss = -1 * torch.min(surr1, surr2) - self.entropy_coef * pi_ent    
                     #                 
                     actor_loss = actor_loss.mean()
                     loss_actor_avg += actor_loss.item()
@@ -184,8 +186,8 @@ class PPO(BasePolicy):  # option: double
             for g in self.critic_eval_optim.param_groups:
                 g['lr'] = new_lr
 
-        loss_actor_avg /= (self._update_iteration/self.actor_learn_freq)
-        loss_critic_avg /= self._update_iteration
+        loss_actor_avg /= (self._update_epochs/self.actor_learn_freq)
+        loss_critic_avg /= self._update_epochs
         # print(f'Train over loss_actor_avg: {loss_actor_avg}, loss_critic_avg {loss_critic_avg}')
 
         return loss_actor_avg, loss_critic_avg
