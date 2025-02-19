@@ -4,3 +4,5 @@ results/
 *.pth
 *.jpg
 *.png
+*.egg-info
+repos/

@@ -22,16 +22,18 @@ class PPO(BasePolicy):  # option: double
         # model,
         a_model,
         c_model,
-        buffer_size=1024,
-        actor_learn_freq=1,
-        learning_rate=1e-4,
+        lr=1e-4,
+        epochs=10,
+        batch_size=64,
+        buffer_size=2048,
         clip_ratio=0.2,
         gamma=0.99,
         lamda=0.95,
         entropy_coef=0.01,
+        entropy_coef_decay=0.99,
         value_coef=0.5,
-        epochs=10,
-        batch_size=64,
+        l2_reg=0,
+        actor_learn_freq=1,
         verbose=False,
         act_dim=None,
         **kwargs,
@@ -39,36 +41,36 @@ class PPO(BasePolicy):  # option: double
         super().__init__()
         self.__dict__.update(kwargs)
 
-        self.lr = learning_rate
+        self.lr = lr
         self.eps = np.finfo(np.float32).eps.item()
         self.clip_ratio = clip_ratio
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
-        self.adv_norm = False  # normalize advantage, defalut=False
-        self.rew_norm = False  # normalize reward, default=False
-        self.schedule_clip = False
-        self.schedule_adam = False
+        self.l2_reg = l2_reg
+        self.entropy_coef_decay = entropy_coef_decay
 
-        self.actor_learn_freq = actor_learn_freq
         self._gamma = gamma
-        self._gae_lam = lamda
+        self._lamda = lamda
         self._update_epochs = epochs
-        self._learn_critic_cnt = 0
-        self._learn_actor_cnt = 0
+        self._batch_size = batch_size
 
         self._verbose = verbose
-        self._batch_size = batch_size
+        self._learn_critic_cnt = 0
+        self._learn_actor_cnt = 0
+        self._actor_learn_freq = actor_learn_freq
         self._normalized = lambda x, e: (x - x.mean()) / (x.std() + e)
         self.buffer = ReplayBuffer(buffer_size, replay=False)
         self.actor_eval = a_model.to(device).train()
         self.critic_eval = c_model.to(device).train()
         self.actor_eval_optim = optim.Adam(self.actor_eval.parameters(), lr=self.lr)
         self.critic_eval_optim = optim.Adam(self.critic_eval.parameters(), lr=self.lr)
-
         self.criterion = nn.SmoothL1Loss()
+
         self.act_dim = act_dim
-        self.l2_reg = 0
-        self.entropy_coef_decay = 0.99
+        self.adv_norm = False  # normalize advantage, defalut=False
+        self.rew_norm = False  # normalize reward, default=False
+        self.schedule_clip = False
+        self.schedule_adam = False
 
     def action(self, state, deterministic=False, **kwargs):
         state = torch.tensor(state, dtype=torch.float32, device=device)
@@ -109,7 +111,7 @@ class PPO(BasePolicy):  # option: double
             masks = M.numpy()
             rewards = self._normalized(R, self.eps).numpy() if self.rew_norm else R.numpy()
             adv_gae = self.GAE(rewards, v_evals_np, next_v_eval=end_v_eval_np,
-                               masks=masks, gamma=self._gamma, lam=self._gae_lam)
+                               masks=masks, gamma=self._gamma, lam=self._lamda)
             advantage = torch.from_numpy(adv_gae).to(device).view(-1, 1)
             advantage = self._normalized(advantage, 1e-10) if self.adv_norm else advantage
             v_target = advantage + v_evals
@@ -137,7 +139,7 @@ class PPO(BasePolicy):  # option: double
                 if self._verbose:
                     print(f'=======Learn_Critic_Net, cnt{self._learn_critic_cnt}=======')
 
-                if self._learn_critic_cnt % self.actor_learn_freq == 0:
+                if self._learn_critic_cnt % self._actor_learn_freq == 0:
                     # actor_core
                     # continue
                     # mu, sigma = self.actor_eval(S)
@@ -186,7 +188,7 @@ class PPO(BasePolicy):  # option: double
             for g in self.critic_eval_optim.param_groups:
                 g['lr'] = new_lr
 
-        loss_actor_avg /= (self._update_epochs/self.actor_learn_freq)
+        loss_actor_avg /= (self._update_epochs/self._actor_learn_freq)
         loss_critic_avg /= self._update_epochs
         # print(f'Train over loss_actor_avg: {loss_actor_avg}, loss_critic_avg {loss_critic_avg}')
 
