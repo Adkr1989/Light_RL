@@ -7,42 +7,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 import drl.utils as Tools
 from drl.algorithm import PPO
+from drl.net import ActorNet, CriticNet
+from collections import namedtuple
 
-class ActorNet(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.Tanh(),
-                                nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
-                                nn.Linear(hidden_dim, output_dim))
-    
-    def forward(self, s):
-        return self.net(s)
-    
-    def pi(self, s, softmax_dim=-1):
-        x = self.forward(s)
-        prob = F.softmax(x, dim=softmax_dim)
-        return prob
-    
-    def action(self, s, softmax_dim=-1, deterministic=False):
-        prob = self.pi(s, softmax_dim)
-        if deterministic:
-            act = torch.argmax(prob)
-            return act.item(), None
-        else:
-            dist = torch.distributions.Categorical(prob)
-            act = dist.sample()
-            log_prob = dist.log_prob(act)
-            return act.item(), log_prob.item()
 
-class CriticNet(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(),
-                                 nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
-                                 nn.Linear(hidden_dim, output_dim))
+def init_agent(args):
+    torch.manual_seed(args.train_seed)
+    torch.cuda.manual_seed(args.train_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-    def forward(self, s):
-        return self.net(s)
+    env = gym.make(args.env_name)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+
+    model = namedtuple('model', ['pi_net', 'v_net'])
+    actor = ActorNet(state_dim, args.hidden_dim, action_dim)
+    critic = CriticNet(state_dim, args.hidden_dim, 1)
+    agent = PPO(model(actor, critic), **vars(args.ppo_args))
+    return env, agent
 
 def eval_loop(agent, env):
     s, info = env.reset()
@@ -63,32 +46,15 @@ def eval_policy(agent, env, loop_cnt=3):
         total_rew += eval_loop(agent, env)
     return int(total_rew / loop_cnt)
 
-def init_agent(args):
-    torch.manual_seed(args.train_seed)
-    torch.cuda.manual_seed(args.train_seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    env = gym.make(args.env_name)
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
-
-    actor = ActorNet(state_dim, args.hidden_dim, action_dim)
-    critic = CriticNet(state_dim, args.hidden_dim, 1)
-    agent = PPO(actor, critic, **vars(args.ppo_args))
-    return env, agent
-
 def eval(args):
-    env = gym.make(args.env_name, render_mode="human")
     _, agent = init_agent(args)
+    env = gym.make(args.env_name, render_mode="human")
     agent.load_model(args.save_dir, load_actor=True)
-    # for i_eps in range(1000):
     i_eps = 0
     while True:
-        rewards = eval_loop(agent, env, render=True)
+        rewards = eval_loop(agent, env)
         i_eps += 1
         print (f'eps:{i_eps}, reward:{round(rewards, 3)}')
-    env.close()
 
 def train(args):
     env, agent = init_agent(args)

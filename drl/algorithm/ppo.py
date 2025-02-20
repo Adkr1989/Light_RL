@@ -19,10 +19,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class PPO(BasePolicy):  # option: double
     def __init__(
         self,
-        # model,
-        a_model,
-        c_model,
-        lr=1e-4,
+        ac_model,
+        pi_lr=1e-4,
+        v_lr=1e-3,
         epochs=10,
         batch_size=64,
         buffer_size=2048,
@@ -41,7 +40,8 @@ class PPO(BasePolicy):  # option: double
         super().__init__()
         self.__dict__.update(kwargs)
 
-        self.lr = lr
+        self.pi_lr = pi_lr
+        self.v_lr = v_lr
         self.eps = np.finfo(np.float32).eps.item()
         self.clip_ratio = clip_ratio
         self.entropy_coef = entropy_coef
@@ -60,10 +60,10 @@ class PPO(BasePolicy):  # option: double
         self._actor_learn_freq = actor_learn_freq
         self._normalized = lambda x, e: (x - x.mean()) / (x.std() + e)
         self.buffer = ReplayBuffer(buffer_size, replay=False)
-        self.actor_eval = a_model.to(device).train()
-        self.critic_eval = c_model.to(device).train()
-        self.actor_eval_optim = optim.Adam(self.actor_eval.parameters(), lr=self.lr)
-        self.critic_eval_optim = optim.Adam(self.critic_eval.parameters(), lr=self.lr)
+        self.actor_model = ac_model.pi_net.to(device).train()
+        self.critic_model = ac_model.v_net.to(device).train()
+        self.actor_optim = optim.Adam(self.actor_model.parameters(), lr=self.pi_lr)
+        self.critic_optim = optim.Adam(self.critic_model.parameters(), lr=self.v_lr)
         self.criterion = nn.SmoothL1Loss()
 
         self.act_dim = act_dim
@@ -75,11 +75,11 @@ class PPO(BasePolicy):  # option: double
     def action(self, state, deterministic=False, **kwargs):
         state = torch.tensor(state, dtype=torch.float32, device=device)
         if deterministic:
-            self.actor_eval.eval()
+            self.actor_model.eval()
         else:
-            self.actor_eval.train()
+            self.actor_model.train()
         with torch.no_grad():
-            act = self.actor_eval.action(state, deterministic=deterministic, **kwargs)
+            act = self.actor_model.action(state, deterministic=deterministic, **kwargs)
             return act
     
     def learn(self, i_episode=0, num_episode=100):
@@ -102,8 +102,8 @@ class PPO(BasePolicy):  # option: double
             print(f'Shape S:{S.shape}, A:{A.shape}, R:{R.shape}, S_:{S_.shape}, Log:{Log.shape}')
 
         with torch.no_grad():
-            v_evals = self.critic_eval(S)
-            end_v_eval = self.critic_eval(S_[-1])
+            v_evals = self.critic_model(S)
+            end_v_eval = self.critic_model(S_[-1])
 
             v_evals_np = v_evals.cpu().numpy()
             end_v_eval_np = end_v_eval.cpu().numpy()
@@ -124,16 +124,16 @@ class PPO(BasePolicy):  # option: double
             for batch_data in dataloader:
                 bs_s, bs_a, bs_v_tar, bs_adv, bs_logp_old = batch_data
                 # critic loss
-                critic_loss = self.criterion(self.critic_eval(bs_s), bs_v_tar).mean()
+                critic_loss = self.criterion(self.critic_model(bs_s), bs_v_tar).mean()
                 #
-                for name, param in self.critic_eval.named_parameters():
+                for name, param in self.critic_model.named_parameters():
                     if 'weight' in name:
                         critic_loss += param.pow(2).sum() * self.l2_reg
                 loss_critic_avg += critic_loss.item()
 
-                self.critic_eval_optim.zero_grad()
+                self.critic_optim.zero_grad()
                 critic_loss.backward()
-                self.critic_eval_optim.step()
+                self.critic_optim.step()
 
                 self._learn_critic_cnt += 1
                 if self._verbose:
@@ -142,12 +142,12 @@ class PPO(BasePolicy):  # option: double
                 if self._learn_critic_cnt % self._actor_learn_freq == 0:
                     # actor_core
                     # continue
-                    # mu, sigma = self.actor_eval(S)
+                    # mu, sigma = self.actor_model(S)
                     # dist = Normal(mu, sigma)
                     # logp = dist.log_prob(A)
 
                     # [batch_size, act_dim]
-                    prob = self.actor_eval.pi(bs_s)
+                    prob = self.actor_model.pi(bs_s)
                     dist = Categorical(prob)
                     pi_ent = dist.entropy().sum(0, keepdim=True)
                     logp = dist.log_prob(bs_a.flatten()).unsqueeze(-1)
@@ -162,10 +162,10 @@ class PPO(BasePolicy):  # option: double
                     actor_loss = actor_loss.mean()
                     loss_actor_avg += actor_loss.item()
                     
-                    self.actor_eval_optim.zero_grad()
+                    self.actor_optim.zero_grad()
                     actor_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.actor_eval.parameters(), 40)
-                    self.actor_eval_optim.step()
+                    torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), 40)
+                    self.actor_optim.step()
                     
                     self._learn_actor_cnt += 1
                     if self._verbose:
@@ -180,13 +180,14 @@ class PPO(BasePolicy):  # option: double
             self.clip_ratio = 0.2 * ep_ratio
 
         if self.schedule_adam:
-            new_lr = self.lr * ep_ratio
+            pi_lr_ = self.pi_lr * ep_ratio
+            v_lr_ = self.v_lr * ep_ratio
             # set learning rate
             # ref: https://stackoverflow.com/questions/48324152/
-            for g in self.actor_eval_optim.param_groups:
-                g['lr'] = new_lr
-            for g in self.critic_eval_optim.param_groups:
-                g['lr'] = new_lr
+            for g in self.actor_optim.param_groups:
+                g['lr'] = pi_lr_
+            for g in self.critic_optim.param_groups:
+                g['lr'] = v_lr_
 
         loss_actor_avg /= (self._update_epochs/self._actor_learn_freq)
         loss_critic_avg /= self._update_epochs

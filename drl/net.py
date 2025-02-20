@@ -29,14 +29,51 @@ class ActorCriticNet(nn.Module):
 class ActorNet(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.action_head = nn.Linear(hidden_dim, output_dim)
+        self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.Tanh(),
+                                nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
+                                nn.Linear(hidden_dim, output_dim))
+    
+    def forward(self, s):
+        return self.net(s)
+    
+    def pi(self, s, softmax_dim=-1):
+        x = self.forward(s)
+        prob = F.softmax(x, dim=softmax_dim)
+        return prob
+    
+    def action(self, s, softmax_dim=-1, deterministic=False):
+        prob = self.pi(s, softmax_dim)
+        if deterministic:
+            act = torch.argmax(prob)
+            return act.item(), None
+        else:
+            dist = torch.distributions.Categorical(prob)
+            act = dist.sample()
+            log_prob = dist.log_prob(act)
+            return act.item(), log_prob.item()
 
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        action_score = self.action_head(x)
-        dist = F.softmax(action_score, dim=-1)
-        return dist
+class CriticNet(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(),
+                                 nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+                                 nn.Linear(hidden_dim, output_dim))
+
+    def forward(self, s):
+        return self.net(s)
+
+
+# class ActorNet(nn.Module):
+#     def __init__(self, input_dim, hidden_dim, output_dim):
+#         super().__init__()
+#         self.fc1 = nn.Linear(input_dim, hidden_dim)
+#         self.action_head = nn.Linear(hidden_dim, output_dim)
+
+#     def forward(self, x):
+#         x = F.relu(self.fc1(x))
+#         action_score = self.action_head(x)
+#         dist = F.softmax(action_score, dim=-1)
+#         return dist
 
 class ActorGaussian(nn.Module):
     def __init__(self, state_dim, hidden_dim, output_dim):
