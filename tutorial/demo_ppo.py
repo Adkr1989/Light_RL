@@ -98,11 +98,9 @@ def train(args):
             mask = 0 if done else 1
             # mask = 0 if dw else 1
             agent.process(s=state, a=act, r=rew, s_=next_state, l=log_prob, m=mask)
-            # rews += rew
             if done:
                 break
             state = next_state
-        # pg_loss, v_loss = agent.learn()
         agent.learn()
 
 def main():
