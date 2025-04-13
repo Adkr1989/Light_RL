@@ -81,8 +81,8 @@ def train(args):
             next_state, rew, dw, tr, info = env.step(act)
             done = (dw or tr)
             rew = -30 if rew <= -100 else rew # trick for lander
+            
             total_steps += 1
-
             if total_steps % args.eval_interval == 0:
                 eval_rews = eval_policy(agent, env, loop_cnt=3)
                 print(f'env: {args.env_name}, step: {int(total_steps / 1000)}k, rewards:{round(eval_rews, 3)}')
@@ -92,18 +92,19 @@ def train(args):
                            x_label=f"Steps({int(args.eval_interval / 1000)}k)", 
                            y_label="Eval rewards", 
                            step_interval=10)
-            if total_steps > 0 and total_steps % args.save_interval == 0:
-                eval_policy(agent, env_render, loop_cnt=3)
+            if total_steps % args.save_interval == 0:
+                # eval_policy(agent, env_render, loop_cnt=3)
                 agent.save_model(save_dir, save_file, total_steps, save_actor=1, save_critic=1)
 
             mask = 0 if done else 1
+            # mask = 0 if dw else 1
             agent.process(s=state, a=act, r=rew, s_=next_state, l=log_prob, m=mask)
-            rews += rew
-
+            # rews += rew
             if done:
                 break
             state = next_state
-        pg_loss, v_loss = agent.learn()
+        # pg_loss, v_loss = agent.learn()
+        agent.learn()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PPO Training Parameters")

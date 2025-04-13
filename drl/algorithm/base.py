@@ -49,10 +49,10 @@ class BasePolicy(object):
         critic_save = '_'.join((save_path, save_step, 'critic.pth'))
 
         if save_actor:
-            torch.save(self.actor_eval.state_dict(), actor_save)
+            torch.save(self.actor_model.state_dict(), actor_save)
             print (f'Save actor model in {actor_save}')
         if save_critic:
-            torch.save(self.critic_eval.state_dict(), critic_save)
+            torch.save(self.critic_model.state_dict(), critic_save)
             print (f'Save critic model in {critic_save}')
 
     def load_model(self, save_dir, load_actor=False, load_critic=False):

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import namedtuple
 
-from drl.model import ActorPPO, CriticV
+from drl.net import ActorPPO, CriticV
 from drl.algorithm import PPO
 from drl.utils import ZFilter
 
