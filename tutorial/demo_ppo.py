@@ -5,9 +5,9 @@ import os.path as osp
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import drl.utils as Tools
 from drl.algorithm import PPO
 from drl.net import ActorNet, CriticNet
+from drl.tools import load_config, plot
 from collections import namedtuple
 
 
@@ -24,7 +24,7 @@ def init_agent(args):
     model = namedtuple('model', ['pi_net', 'v_net'])
     actor = ActorNet(state_dim, args.hidden_dim, action_dim)
     critic = CriticNet(state_dim, args.hidden_dim, 1)
-    agent = PPO(model(actor, critic), **vars(args.ppo_args))
+    agent = PPO(model(actor, critic), **args.algo)
     return env, agent
 
 def eval_loop(agent, env):
@@ -59,8 +59,7 @@ def eval(args):
 def train(args):
     env, agent = init_agent(args)
     env_render = gym.make(args.env_name, render_mode = "human" if args.render else None)
-
-    save_dir = osp.join(args.save_dir, f'ppo_{args.env_name}')
+    save_dir = osp.join(args.save_dir, f"{args.algo['name']}_{args.env_name}")
     if osp.exists(save_dir):
         import shutil
         shutil.rmtree(save_dir)        
@@ -74,7 +73,7 @@ def train(args):
         state, info = env.reset(seed=env_seed)
         env_seed += 1
 
-        max_len = agent.buffer.capacity()
+        max_len = agent.data_capacity()
         rews = 0
         for _ in range(max_len):
             act, log_prob = agent.action(state)
@@ -87,7 +86,7 @@ def train(args):
                 eval_rews = eval_policy(agent, env, loop_cnt=3)
                 print(f'env: {args.env_name}, step: {int(total_steps / 1000)}k, rewards:{round(eval_rews, 3)}')
                 live_time.append(eval_rews)
-                Tools.plot(live_time, save_dir, 
+                plot(live_time, save_dir, 
                            title=f'PPO_{args.env_name}', 
                            x_label=f"Steps({int(args.eval_interval / 1000)}k)", 
                            y_label="Eval rewards", 
@@ -106,53 +105,9 @@ def train(args):
         # pg_loss, v_loss = agent.learn()
         agent.learn()
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="PPO Training Parameters")
-
-    # 环境参数
-    env_group = parser.add_argument_group("Environment Parameters")
-    env_group.add_argument('--env_name', type=str, default='LunarLander-v3', help='Name of the environment')
-    env_group.add_argument('--env_seed', type=int, default=42, help='Random seed for reproducibility')
-    env_group.add_argument('--render', action='store_true', help='Render the environment during evaluation')
-
-    # 通用训练参数
-    train_group = parser.add_argument_group("Training Parameters")
-    train_group.add_argument('--train', action='store_true', help='Train')
-    train_group.add_argument('--eval', action='store_true', help='Eval')
-    train_group.add_argument('--train_seed', type=int, default=42, help='Train seed')
-    train_group.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension for the actor and critic networks')
-    train_group.add_argument('--max_timesteps', type=int, default=1e8, help='Maximum timesteps for training')
-    train_group.add_argument('--eval_interval', type=int, default=5e3, help='Evaluate agent every N timesteps')
-    train_group.add_argument('--save_interval', type=int, default=5e4, help='Save model every N timesteps')
-    train_group.add_argument('--save_dir', type=str, default='save', help='Directory to save models')
-
-    # PPO 特有参数
-    ppo_group = parser.add_argument_group("PPO Parameters")
-    ppo_group.add_argument('--lr', type=float, default=1e-4, help='Learning rate for the optimizer')
-    ppo_group.add_argument('--clip_ratio', type=float, default=0.2, help='PPO clip ratio')
-    ppo_group.add_argument('--gamma', type=float, default=0.99, help='Discount factor for rewards')
-    ppo_group.add_argument('--lamda', type=float, default=0.95, help='Lambda for GAE (Generalized Advantage Estimation)')
-    ppo_group.add_argument('--entropy_coef', type=float, default=0, help='Entropy regularization coefficient')
-    ppo_group.add_argument('--value_coef', type=float, default=0.5, help='Value function loss coefficient')
-    ppo_group.add_argument('--epochs', type=int, default=10, help='Number of PPO epochs per update')
-    ppo_group.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
-    ppo_group.add_argument('--buffer_size', type=int, default=2048, help='Size of the replay buffer')
-
-    args = parser.parse_args()
-    ppo_args = argparse.Namespace()
-    ppo_params = ['lr', 'clip_ratio', 'gamma', 'lamda', 
-                  'entropy_coef', 'value_coef', 
-                  'epochs', 'batch_size', 'buffer_size']
-    for param in ppo_params:
-        setattr(ppo_args, param, getattr(args, param))
-    setattr(args, 'ppo_args', ppo_args)
-
-    return args
-
-# 解析参数
-
 def main():
-    args = parse_args()
+    config_yaml = '../configs/ppo.yaml'
+    args = load_config(config_yaml)
     if args.train:
         train(args)
     elif args.eval:

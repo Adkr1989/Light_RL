@@ -24,6 +24,11 @@ a lightweight deep reinforcement learning implement
     cd Light_RL
     pip install -e .
 ```
+- install requirement
+```
+pip install "gymnasium[all]"
+```
+if u meet `swig` error, try `sudo apt install swig` to install swig.
 
 ## 3. Usage
 ## 3.1 quick start

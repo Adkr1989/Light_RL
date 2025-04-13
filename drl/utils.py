@@ -1,27 +1,9 @@
 import os
-import matplotlib.pyplot as plt
 import numpy as np
 import random
 import torch
 from collections import deque
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def plot(steps, model_save_dir, title="rl", x_label="Episode", y_label="Reward", step_interval=None):
-    ax = plt.subplot(111)
-    ax.cla()
-    ax.grid()
-    ax.set_title(title)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.plot(steps)
-    RunTime = len(steps)
-
-    path = model_save_dir + '/RunTime' + str(RunTime) + '.jpg'
-    if step_interval and len(steps) % step_interval == 0:
-        plt.savefig(path)
-        print(f'save fig in {path}')
-    plt.pause(0.0000001)
 
 class Buffer(object):
     def __init__(self, size, **kwargs):

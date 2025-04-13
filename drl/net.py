@@ -1,4 +1,5 @@
-import gym, os, time
+import os
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from itertools import count
@@ -26,6 +27,7 @@ class ActorCriticNet(nn.Module):
         dist = F.softmax(action_score, dim=-1)
         return dist, state_value
 
+# ppo discrete
 class ActorNet(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()

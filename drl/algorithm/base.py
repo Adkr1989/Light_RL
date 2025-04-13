@@ -33,9 +33,12 @@ class BasePolicy(object):
     #         self.actor_eval.eval()
     #     # return self.actor_eval.action(state, eval)
     #     return self.action(state, eval)
+    def data_capacity(self):
+        assert self.buffer is not None, 'buffer is not initialized'
+        return self.buffer.capacity()
 
     def warm_up(self, warm_size=0):
-        # for off-policy algo, warm up is better
+        # for off-policy algorithm, warm up is better
         if warm_size:
             return len(self.buffer) < warm_size
         return not self.buffer.is_full()
