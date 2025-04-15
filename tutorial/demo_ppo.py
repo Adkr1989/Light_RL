@@ -8,8 +8,16 @@ import torch.nn.functional as F
 from drl.algorithm import PPO
 from drl.net import ActorNet, CriticNet
 from drl.tools import load_config, plot
+from drl.env_utils import gym_env_wrapper
 from collections import namedtuple
+import logging
 
+# 设置基本配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def init_agent(args):
     torch.manual_seed(args.train_seed)
@@ -17,28 +25,24 @@ def init_agent(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    env = gym.make(args.env_name)
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
-
+    env = gym_env_wrapper(args.env.name)
     model = namedtuple('model', ['pi_net', 'v_net'])
-    actor = ActorNet(state_dim, args.hidden_dim, action_dim)
-    critic = CriticNet(state_dim, args.hidden_dim, 1)
-    agent = PPO(model(actor, critic), **args.algo)
+    actor = ActorNet(env.state_dim, args.hidden_dim, env.action_dim)
+    critic = CriticNet(env.state_dim, args.hidden_dim, 1)
+    agent = PPO(model(actor, critic), **args.algo.to_dict())
     return env, agent
 
 def eval_loop(agent, env):
-    s, info = env.reset()
+    s = env.reset()
     done = False
-    total_rew = 0
+    rs = 0
     while not done:
         a, _ = agent.action(s, deterministic=1)
-        s_, r, dw, tr, info = env.step(a)
-        done = (dw or tr)
-        total_rew += r
+        s_, r, done, info = env.step(a)
+        rs += r
         s = s_
     env.close()
-    return total_rew
+    return rs 
 
 def eval_policy(agent, env, loop_cnt=3):
     total_rew = 0
@@ -48,46 +52,44 @@ def eval_policy(agent, env, loop_cnt=3):
 
 def eval(args):
     _, agent = init_agent(args)
-    env = gym.make(args.env_name, render_mode="human")
+    env = gym_env_wrapper(args.env.name, render_mode="human")
     agent.load_model(args.save_dir, load_actor=True)
     i_eps = 0
     while True:
         rewards = eval_loop(agent, env)
         i_eps += 1
-        print (f'eps:{i_eps}, reward:{round(rewards, 3)}')
+        logging.info(f'eps:{i_eps}, reward:{round(rewards, 3)}')
 
 def train(args):
     env, agent = init_agent(args)
-    env_render = gym.make(args.env_name, render_mode = "human" if args.render else None)
-    save_dir = osp.join(args.save_dir, f"{args.algo['name']}_{args.env_name}")
+    # env_render = gym_env_wrapper(args.env.name, render_mode = "human" if args.env.render else None)
+    save_dir = osp.join(args.save_dir, f"{args.algo['name']}_{args.env.name}")
     if osp.exists(save_dir):
         import shutil
         shutil.rmtree(save_dir)        
     os.makedirs(save_dir, exist_ok=True)
     save_file = save_dir.split('/')[-1]
 
-    env_seed = args.env_seed
+    env.set_seed(args.env.seed)
     live_time = []
     total_steps = 0
     while total_steps < args.max_timesteps:
-        state, info = env.reset(seed=env_seed)
-        env_seed += 1
+        state = env.reset(seed=env.get_seed())
+        env.set_seed(env.get_seed() + 1)
 
         max_len = agent.data_capacity()
-        rews = 0
         for _ in range(max_len):
             act, log_prob = agent.action(state)
-            next_state, rew, dw, tr, info = env.step(act)
-            done = (dw or tr)
+            next_state, rew, done, info = env.step(act)
             rew = -30 if rew <= -100 else rew # trick for lander
             
             total_steps += 1
             if total_steps % args.eval_interval == 0:
                 eval_rews = eval_policy(agent, env, loop_cnt=3)
-                print(f'env: {args.env_name}, step: {int(total_steps / 1000)}k, rewards:{round(eval_rews, 3)}')
+                logging.info(f'env: {args.env.name}, step: {int(total_steps / 1000)}k, rewards:{round(eval_rews, 3)}')
                 live_time.append(eval_rews)
                 plot(live_time, save_dir, 
-                           title=f'PPO_{args.env_name}', 
+                           title=f'PPO_{args.env.name}', 
                            x_label=f"Steps({int(args.eval_interval / 1000)}k)", 
                            y_label="Eval rewards", 
                            step_interval=10)

@@ -1,7 +1,3 @@
-env_name: LunarLander-v3
-env_seed: 42
-render: false
-
 train: true
 eval: false
 train_seed: 42
@@ -10,6 +6,11 @@ max_timesteps: 100000
 eval_interval: 5000
 save_interval: 50000
 save_dir: save
+
+env:
+  name: LunarLander-v3
+  seed: 42
+  render: false
 
 algo:
   name: ppo
